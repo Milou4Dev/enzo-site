@@ -11,24 +11,22 @@ A website made for a friend using Go (Gin). The project focuses on simplicity.
 
 ## Installation
 
-```
+### Running with Go
 
-# Run with Go
+```bash
+# Install dependencies
 go mod tidy
+
+# Run the application
 go run main.go
+```
 
-# Or with Docker
+### Running with Docker
+
+```bash
+# Build the Docker image
 docker build -t personal-site .
+
+# Run the Docker container
 docker run -p 8080:8080 personal-site
-```
-
-## Structure
-
-```
-
-.
-├── main.go
-├── static/
-├── templates/
-└── Dockerfile
 ```
