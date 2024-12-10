@@ -1,4 +1,3 @@
-```markdown
 # Simple Website with Gin
 
 A website made for a friend using Go (Gin). The project focuses on simplicity.
