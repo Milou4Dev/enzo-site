@@ -4,8 +4,7 @@ WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-w -s -extldflags '-static' -X 'main.Version=$(git describe --tags --always)' -X 'main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" -o main .
-RUN ./main -version || true
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-w -s -extldflags '-static'" -o main .
 
 FROM aquasec/trivy:latest AS security-scan
 COPY --from=builder /build /build
