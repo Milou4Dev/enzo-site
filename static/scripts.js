@@ -1,67 +1,146 @@
-document.querySelectorAll('a[href^="#"]').forEach((anchor) => {
-  anchor.addEventListener("click", function (e) {
-    e.preventDefault();
-    const t = this.getAttribute("href").substring(1);
-    if (!t) return;
-    const n = document.getElementById(t);
-    n &&
-      (n.scrollIntoView({ behavior: "smooth" }),
-      document
-        .querySelectorAll("nav a")
-        .forEach((e) => e.classList.remove("active")),
-      this.classList.add("active"));
-  });
-});
-const contactForm = document.getElementById("contact-form");
-function showError(e, t) {
-  const n = document.createElement("div");
-  (n.className = "error"),
-    (n.style.color = "red"),
-    (n.style.fontSize = "0.8rem"),
-    (n.style.marginTop = "0.25rem"),
-    (n.textContent = t),
-    e.parentNode.appendChild(n);
-}
-function isValidEmail(e) {
-  return /^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(e);
-}
-function setupModal(e, t) {
-  const n = document.getElementById(e);
-  if (!n) return;
-  const o = n.querySelector(".close-modal");
-  o &&
-    (document.querySelectorAll(t).forEach((e) => {
-      e.addEventListener("click", function (e) {
-        e.preventDefault(), n.classList.add("active");
+(() => {
+  const e = {
+      ANCHORS: 'a[href^="#"]',
+      CONTACT_FORM: "#contact-form",
+      NAV_LINKS: "nav a",
+      CLOSE_MODAL: ".close-modal",
+    },
+    t = /^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/,
+    n = {
+      NAME_REQUIRED: "Le nom est requis",
+      EMAIL_REQUIRED: "L'email est requis",
+      EMAIL_INVALID: "L'email n'est pas valide",
+      MESSAGE_REQUIRED: "Le message est requis",
+    },
+    o = (e, t) => {
+      let n;
+      return (...o) => {
+        clearTimeout(n), (n = setTimeout(() => e.apply(null, o), t));
+      };
+    },
+    s = (e) => {
+      const t = document.createElement("div");
+      return (t.textContent = e), t.innerHTML;
+    },
+    i = (e, t) => {
+      const n = document.createElement("div");
+      (n.className = "error"),
+        Object.assign(n.style, {
+          color: "red",
+          fontSize: "0.8rem",
+          marginTop: "0.25rem",
+        }),
+        (n.textContent = s(t)),
+        e.parentNode.appendChild(n);
+    },
+    a = () => {
+      document.querySelectorAll(".error").forEach((e) => e.remove());
+    },
+    r = (e) => t.test(null == e ? void 0 : e.trim()),
+    l = (e, t, o) => {
+      let s = !0;
+      return (
+        a(),
+        null != (null == e ? void 0 : e.trim()) ||
+          (i(document.getElementById("name"), n.NAME_REQUIRED), (s = !1)),
+        null != (null == t ? void 0 : t.trim())
+          ? r(t) ||
+            (i(document.getElementById("email"), n.EMAIL_INVALID), (s = !1))
+          : (i(document.getElementById("email"), n.EMAIL_REQUIRED), (s = !1)),
+        null != (null == o ? void 0 : o.trim()) ||
+          (i(document.getElementById("message"), n.MESSAGE_REQUIRED), (s = !1)),
+        s
+      );
+    };
+  class c {
+    constructor(t, n) {
+      (this.modal = document.getElementById(t)),
+        this.modal &&
+          ((this.closeBtn = this.modal.querySelector(e.CLOSE_MODAL)),
+          this.setupEventListeners(n));
+    }
+    setupEventListeners(e) {
+      document.querySelectorAll(e).forEach((e) => {
+        e.addEventListener("click", this.open.bind(this));
+      }),
+        this.closeBtn &&
+          this.closeBtn.addEventListener("click", this.close.bind(this)),
+        this.modal.addEventListener("click", (e) => {
+          e.target === this.modal && this.close();
+        }),
+        document.addEventListener("keydown", (e) => {
+          "Escape" === e.key &&
+            this.modal.classList.contains("active") &&
+            this.close();
+        });
+    }
+    open(e) {
+      null == e || e.preventDefault(), this.modal.classList.add("active");
+    }
+    close() {
+      this.modal.classList.remove("active");
+    }
+  }
+  const d = () => {
+      const t = o((e) => {
+        e.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 50);
+      document.querySelectorAll(e.ANCHORS).forEach((n) => {
+        n.addEventListener("click", (o) => {
+          o.preventDefault();
+          const s = n.getAttribute("href").substring(1);
+          if (!s) return;
+          const i = document.getElementById(s);
+          i &&
+            (t(i),
+            document
+              .querySelectorAll(e.NAV_LINKS)
+              .forEach((e) => e.classList.remove("active")),
+            n.classList.add("active"));
+        });
       });
-    }),
-    o.addEventListener("click", () => {
-      n.classList.remove("active");
-    }),
-    n.addEventListener("click", (e) => {
-      e.target === n && n.classList.remove("active");
-    }));
-}
-contactForm &&
-  contactForm.addEventListener("submit", function (e) {
-    e.preventDefault();
-    const t = this.querySelector("#name").value.trim(),
-      n = this.querySelector("#email").value.trim(),
-      o = this.querySelector("#message").value.trim();
-    document.querySelectorAll(".error").forEach((e) => e.remove());
-    let r = !1;
-    t ||
-      (showError(this.querySelector("#name"), "Le nom est requis"), (r = !0)),
-      n
-        ? isValidEmail(n) ||
-          (showError(this.querySelector("#email"), "L'email n'est pas valide"),
-          (r = !0))
-        : (showError(this.querySelector("#email"), "L'email est requis"),
-          (r = !0)),
-      o ||
-        (showError(this.querySelector("#message"), "Le message est requis"),
-        (r = !0)),
-      r || this.submit();
-  }),
-  setupModal("development-modal", ".read-more"),
-  setupModal("legal-modal", ".mentions-legales");
+    },
+    m = () => {
+      const t = document.querySelector(e.CONTACT_FORM);
+      t &&
+        t.addEventListener("submit", (e) => {
+          e.preventDefault();
+          const n = new FormData(t),
+            o = n.get("name"),
+            s = n.get("email"),
+            i = n.get("message");
+          if (!l(o, s, i)) return;
+          const a = t.querySelector('button[type="submit"]');
+          (a.disabled = !0),
+            (a.textContent = "Envoi en cours..."),
+            fetch(t.action, {
+              method: "POST",
+              body: n,
+              headers: { Accept: "application/json" },
+            })
+              .then((e) => {
+                if (!e.ok) throw new Error("Network response was not ok");
+                t.reset(), alert("Message envoyé avec succès!");
+              })
+              .catch((e) => {
+                console.error("Error:", e),
+                  alert(
+                    "Une erreur est survenue. Veuillez réessayer plus tard."
+                  );
+              })
+              .finally(() => {
+                (a.disabled = !1), (a.textContent = "Envoyer le message");
+              });
+        });
+    };
+  document.addEventListener("DOMContentLoaded", () => {
+    try {
+      d(),
+        m(),
+        new c("development-modal", ".read-more"),
+        new c("legal-modal", ".mentions-legales");
+    } catch (e) {
+      console.error("Initialization error:", e);
+    }
+  });
+})();

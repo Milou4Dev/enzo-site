@@ -8,9 +8,11 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/time/rate"
 )
 
@@ -26,6 +28,9 @@ type Config struct {
 	ReadTimeout      time.Duration
 	WriteTimeout     time.Duration
 	IdleTimeout      time.Duration
+	MaxConns         int
+	CircuitTimeout   time.Duration
+	CircuitMaxFails  int
 }
 
 type App struct {
@@ -33,6 +38,9 @@ type App struct {
 	router      *gin.Engine
 	rateLimiter *RateLimiter
 	logger      *Logger
+	metrics     *Metrics
+	circuit     *CircuitBreaker
+	pool        sync.Pool
 }
 
 type RateLimiter struct {
@@ -43,6 +51,23 @@ type RateLimiter struct {
 
 type Logger struct {
 	*log.Logger
+	errorChan chan error
+}
+
+type Metrics struct {
+	requestCount   uint64
+	errorCount     uint64
+	responseTime   time.Duration
+	activeRequests int64
+	mu             sync.RWMutex
+}
+
+type CircuitBreaker struct {
+	failures int32
+	lastFail time.Time
+	timeout  time.Duration
+	maxFails int32
+	mu       sync.RWMutex
 }
 
 func NewApp() *App {
@@ -54,6 +79,13 @@ func NewApp() *App {
 		router:      gin.New(),
 		rateLimiter: newRateLimiter(config.RateLimit, config.RateLimitBurst),
 		logger:      newLogger(),
+		metrics:     newMetrics(),
+		circuit:     newCircuitBreaker(config.CircuitTimeout, config.CircuitMaxFails),
+		pool: sync.Pool{
+			New: func() interface{} {
+				return make([]byte, 1024)
+			},
+		},
 	}
 
 	app.setupMiddleware()
@@ -70,11 +102,14 @@ func loadConfig() Config {
 		StaticDir:        "static",
 		TemplatesPattern: "templates/*",
 		ShutdownTimeout:  10 * time.Second,
-		TrustedProxies:   []string{"127.0.0.1"},
+		TrustedProxies:   strings.Split(getEnv("TRUSTED_PROXIES", "127.0.0.1"), ","),
 		MaxRequestSize:   1 << 20,
 		ReadTimeout:      5 * time.Second,
 		WriteTimeout:     10 * time.Second,
 		IdleTimeout:      120 * time.Second,
+		MaxConns:         1000,
+		CircuitTimeout:   30 * time.Second,
+		CircuitMaxFails:  5,
 	}
 }
 
@@ -87,23 +122,37 @@ func newRateLimiter(limit, burst int) *RateLimiter {
 
 func newLogger() *Logger {
 	return &Logger{
-		Logger: log.New(os.Stdout, "", log.LstdFlags),
+		Logger:    log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds|log.LUTC),
+		errorChan: make(chan error, 100),
+	}
+}
+
+func newMetrics() *Metrics {
+	return &Metrics{}
+}
+
+func newCircuitBreaker(timeout time.Duration, maxFails int) *CircuitBreaker {
+	return &CircuitBreaker{
+		timeout:  timeout,
+		maxFails: int32(maxFails),
 	}
 }
 
 func (app *App) setupMiddleware() {
 	app.router.Use(gin.Recovery())
+	app.router.Use(app.metricsMiddleware())
 	app.router.Use(app.requestLogger())
 	app.router.Use(app.securityHeaders())
 	app.router.Use(app.rateLimiterMiddleware())
+	app.router.Use(app.circuitBreakerMiddleware())
 	app.router.Use(app.cacheControl())
 	app.router.Use(app.requestSizeLimit())
+	app.router.Use(app.corsMiddleware())
 }
 
 func (app *App) setupRoutes() {
 	app.router.LoadHTMLGlob(app.config.TemplatesPattern)
 	app.router.StaticFS("/static", gin.Dir(app.config.StaticDir, false))
-
 	app.router.GET("/", app.handleHome)
 	app.router.GET("/health", app.handleHealth)
 	app.router.NoRoute(app.handle404)
@@ -111,25 +160,67 @@ func (app *App) setupRoutes() {
 
 func (app *App) Run() error {
 	server := &http.Server{
-		Addr:         ":" + app.config.Port,
-		Handler:      app.router,
-		ReadTimeout:  app.config.ReadTimeout,
-		WriteTimeout: app.config.WriteTimeout,
-		IdleTimeout:  app.config.IdleTimeout,
+		Addr:           ":" + app.config.Port,
+		Handler:        app.router,
+		ReadTimeout:    app.config.ReadTimeout,
+		WriteTimeout:   app.config.WriteTimeout,
+		IdleTimeout:    app.config.IdleTimeout,
+		MaxHeaderBytes: 1 << 20,
 	}
 
-	go func() {
-		sigChan := make(chan os.Signal, 1)
-		<-sigChan
-		ctx, cancel := context.WithTimeout(context.Background(), app.config.ShutdownTimeout)
-		defer cancel()
-		if err := server.Shutdown(ctx); err != nil {
-			app.logger.Printf("Server shutdown error: %v", err)
-		}
-	}()
+	g, ctx := errgroup.WithContext(context.Background())
 
-	app.logger.Printf("Server starting on port %s", app.config.Port)
-	return server.ListenAndServe()
+	g.Go(func() error {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-ticker.C:
+				app.metrics.mu.RLock()
+				app.logger.Printf("Metrics - Requests: %d, Errors: %d, Active: %d",
+					atomic.LoadUint64(&app.metrics.requestCount),
+					atomic.LoadUint64(&app.metrics.errorCount),
+					atomic.LoadInt64(&app.metrics.activeRequests))
+				app.metrics.mu.RUnlock()
+			}
+		}
+	})
+
+	g.Go(func() error {
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case err := <-app.logger.errorChan:
+				app.logger.Printf("Error: %v", err)
+			}
+		}
+	})
+
+	g.Go(func() error {
+		app.logger.Printf("Server starting on port %s", app.config.Port)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			return fmt.Errorf("server error: %v", err)
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), app.config.ShutdownTimeout)
+		defer cancel()
+
+		app.logger.Print("Shutting down server...")
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			return fmt.Errorf("server shutdown error: %v", err)
+		}
+		return nil
+	})
+
+	return g.Wait()
 }
 
 func (app *App) handleHome(c *gin.Context) {
@@ -222,6 +313,80 @@ func (app *App) securityHeaders() gin.HandlerFunc {
 		c.Header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; script-src 'self' https://cdnjs.cloudflare.com; connect-src 'self' https://formsubmit.co; img-src 'self' data: https:; font-src 'self' https://cdnjs.cloudflare.com; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self' https://formsubmit.co;")
 		c.Next()
 	}
+}
+
+func (app *App) metricsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+
+		atomic.AddInt64(&app.metrics.activeRequests, 1)
+		defer atomic.AddInt64(&app.metrics.activeRequests, -1)
+
+		c.Next()
+
+		atomic.AddUint64(&app.metrics.requestCount, 1)
+		if c.Writer.Status() >= 400 {
+			atomic.AddUint64(&app.metrics.errorCount, 1)
+		}
+
+		app.metrics.mu.Lock()
+		app.metrics.responseTime += time.Since(start)
+		app.metrics.mu.Unlock()
+
+		if c.Writer.Status() >= 500 {
+			app.circuit.recordFailure()
+		}
+	}
+}
+
+func (app *App) circuitBreakerMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !app.circuit.allow() {
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+				"error": "Service temporarily unavailable",
+			})
+			return
+		}
+		c.Next()
+	}
+}
+
+func (app *App) corsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type")
+		c.Header("Access-Control-Max-Age", "86400")
+
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		c.Next()
+	}
+}
+
+func (cb *CircuitBreaker) allow() bool {
+	cb.mu.RLock()
+	defer cb.mu.RUnlock()
+
+	failures := atomic.LoadInt32(&cb.failures)
+	if failures >= cb.maxFails {
+		if time.Since(cb.lastFail) > cb.timeout {
+			atomic.StoreInt32(&cb.failures, 0)
+			return true
+		}
+		return false
+	}
+	return true
+}
+
+func (cb *CircuitBreaker) recordFailure() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	atomic.AddInt32(&cb.failures, 1)
+	cb.lastFail = time.Now()
 }
 
 func getEnv(key, fallback string) string {
