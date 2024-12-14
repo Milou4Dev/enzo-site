@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -202,7 +203,7 @@ func (app *App) Run() error {
 
 	g.Go(func() error {
 		app.logger.Printf("Server starting on port %s", app.config.Port)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return fmt.Errorf("server error: %v", err)
 		}
 		return nil
@@ -398,7 +399,7 @@ func getEnv(key, fallback string) string {
 
 func main() {
 	app := NewApp()
-	if err := app.Run(); err != nil && err != http.ErrServerClosed {
+	if err := app.Run(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("Server failed to start: %v", err)
 	}
 }
